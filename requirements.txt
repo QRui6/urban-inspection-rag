@@ -1,0 +1,17 @@
+langchain
+langchain-community
+elasticsearch
+sentence-transformers
+python-dotenv
+tiktoken
+numpy
+pandas
+pypdf
+python-docx
+flask
+flask-cors
+werkzeug
+chromadb
+volcenginesdkarkruntime
+google-genai
+openai

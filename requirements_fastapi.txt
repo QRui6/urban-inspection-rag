@@ -1,0 +1,33 @@
+# FastAPI核心依赖
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6  # 用于文件上传
+
+# 原有的依赖（保持与Flask版本一致）
+flask>=2.3.0
+flask-cors>=4.0.0
+werkzeug>=2.3.0
+
+# AI和机器学习库
+torch>=2.0.0
+sentence-transformers>=2.2.0
+transformers>=4.30.0
+chromadb>=0.4.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# 图像处理
+Pillow>=10.0.0
+opencv-python>=4.8.0
+
+# API客户端
+openai>=1.0.0
+requests>=2.31.0
+dashscope>=1.14.0
+
+# 数据处理
+pydantic>=2.0.0
+python-jose[cryptography]>=3.3.0
+
+# 其他工具
+python-dotenv>=1.0.0 
