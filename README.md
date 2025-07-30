@@ -69,8 +69,8 @@
 
 ### 后端框架
 - **FastAPI** - 高性能异步API框架
-- **Flask** - 轻量级Web框架（备选）
 - **Uvicorn** - ASGI服务器
+- **Pydantic** - 数据验证和序列化
 
 ### AI & 机器学习
 - **Chinese-CLIP** - 中文多模态预训练模型
@@ -117,10 +117,6 @@ venv\Scripts\activate     # Windows
 
 ### 3. 安装依赖
 ```bash
-# FastAPI版本
-pip install -r requirements_fastapi.txt
-
-# 或Flask版本
 pip install -r requirements.txt
 ```
 
@@ -157,19 +153,14 @@ python main.py
 
 ### 启动服务
 
-**FastAPI版本（推荐）：**
 ```bash
-python fastapi_run.py --reload
-```
-
-**Flask版本：**
-```bash
-python run.py
+python run.py --reload
 ```
 
 服务启动后访问：
-- API文档：http://localhost:5000/docs (仅FastAPI)
+- API文档：http://localhost:5000/docs
 - 健康检查：http://localhost:5000/api/health
+- 交互式API文档：http://localhost:5000/redoc
 
 ### 基本使用
 
@@ -292,12 +283,9 @@ urban-inspection-rag/
 ├── 📁 logs/                   # 日志目录
 ├── 📁 uploads/                # 上传文件
 ├── main.py                    # 主程序入口
-├── api.py                     # Flask API服务
-├── fastapi_api.py             # FastAPI服务
-├── run.py                     # Flask启动脚本
-├── fastapi_run.py             # FastAPI启动脚本
-├── requirements.txt           # Flask依赖
-├── requirements_fastapi.txt   # FastAPI依赖
+├── api.py                     # FastAPI服务
+├── run.py                     # 启动脚本
+├── requirements.txt           # 项目依赖
 └── README.md                  # 项目文档
 ```
 
@@ -372,6 +360,25 @@ python src/test/test_chinese_clip.py
 python src/test/test_google_gemini.py
 ```
 
+### UV开发工作流
+```bash
+# 安装开发依赖
+uv sync --dev
+
+# 运行测试
+uv run pytest
+
+# 代码格式化
+uv run black .
+uv run isort .
+
+# 类型检查
+uv run mypy src/
+
+# 启动开发服务器
+uv run python run.py --reload
+```
+
 ## 🤝 贡献指南
 
 欢迎提交Issue和Pull Request来帮助改进项目！
@@ -400,18 +407,11 @@ python src/test/test_google_gemini.py
 
 ## 🙏 致谢
 
-感谢以下开源项目的支持：
+开源项目的支持：
 - [ChromaDB](https://github.com/chroma-core/chroma) - 向量数据库
 - [Chinese-CLIP](https://github.com/OFA-Sys/Chinese-CLIP) - 中文多模态模型
 - [Sentence Transformers](https://github.com/UKPLab/sentence-transformers) - 文本嵌入
 - [FastAPI](https://github.com/tiangolo/fastapi) - 现代Web框架
-
-## 📞 联系方式
-
-如有问题或建议，请通过以下方式联系：
-- 📧 Email: your-email@example.com
-- 💬 Issue: [GitHub Issues](https://github.com/your-username/urban-inspection-rag/issues)
-- 📱 微信: your-wechat-id
 
 ---
 
