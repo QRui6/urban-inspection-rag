@@ -9,9 +9,9 @@ from typing import List, Dict, Any, Optional, Tuple
 from src.document_loader.loader import DocumentLoader
 from src.embedding.embedder import Embedder
 from src.storage.chroma_store import ChromaStore
-from src.retrieval.retriever import Retriever
 from src.reranker.reranker import Reranker
 from src.generator.generator import Generator
+from src.vision_analyzer import VisionAnalyzer
 from config.config import RAW_DATA_DIR, GENERATOR_CONFIG, MODELS, ACTIVE_MODELS, PROMPT_CONFIG
 from src.document_loader.pdf2md import batch_pdf_to_markdown
 from src.document_loader.md_loader_optimized import MarkdownChunkLoader
@@ -30,9 +30,10 @@ class RAGSystem:
     def __init__(self, dual_retrieval: bool = True):
         self.document_loader = DocumentLoader()
         self.embedder = Embedder()
-        self.es_store = ChromaStore()
+        self.chroma_store = ChromaStore()
         self.reranker = Reranker()
         self.generator = Generator()
+        self.vision_analyzer = VisionAnalyzer()  # 使用独立的视觉分析模块
         
         # 是否启用双路检索
         self.dual_retrieval = dual_retrieval
@@ -41,46 +42,10 @@ class RAGSystem:
         self.vision_clients = {}
         self.language_clients = {}
         
-        # 初始化视觉模型客户端
-        self._init_vision_clients()
-        
         # 初始化语言模型客户端
         self._init_language_clients()
         
-    def _init_vision_clients(self):
-        """初始化视觉模型客户端"""
-        # 获取当前激活的视觉模型
-        active_vision = ACTIVE_MODELS.get("vision")
-        if not active_vision or active_vision not in MODELS["vision_models"]:
-            print(f"警告: 未配置有效的视觉模型或模型'{active_vision}'不存在")
-            return
-            
-        # 获取视觉模型配置
-        vision_models = MODELS["vision_models"]
-        
-        # 初始化所有已配置的视觉模型
-        for model_name, model_config in vision_models.items():
-            try:
-                if model_config["type"] == "openai":
-                    # 初始化OpenAI兼容的视觉模型（如通义千问）
-                    self.vision_clients[model_name] = OpenAI(
-                        api_key=model_config["api_key"],
-                        base_url=model_config["base_url"],
-                    )
-                    print(f"已初始化视觉模型: {model_name} ({model_config['description']})")
-                    
-                elif model_config["type"] == "google":
-                    # 初始化Google Gemini视觉模型
-                    try:
-                        self.vision_clients[model_name] = genai.Client(api_key=model_config["api_key"])
-                        print(f"已初始化视觉模型: {model_name} ({model_config['description']})")
-                    except Exception as e:
-                        print(f"初始化Google视觉模型{model_name}失败: {e}")
-                elif model_config["type"] == "google":
-                    print(f"警告: Google API库不可用，无法初始化{model_name}视觉模型")
-                        
-            except Exception as e:
-                print(f"初始化视觉模型{model_name}失败: {e}")
+
     
     def _init_language_clients(self):
         """初始化语言模型客户端"""
@@ -111,146 +76,23 @@ class RAGSystem:
                         print(f"已初始化语言模型: {model_name} ({model_config['description']})")
                     except Exception as e:
                         print(f"初始化Google语言模型{model_name}失败: {e}")
-                elif model_config["type"] == "google":
-                    print(f"警告: Google API库不可用，无法初始化{model_name}语言模型")
                         
             except Exception as e:
                 print(f"初始化语言模型{model_name}失败: {e}")
     
-    def analyze_image(self, img_input: str, prompt: str) -> Tuple[Optional[str], Optional[str]]:
-        """使用配置的视觉模型分析图像
+    def analyze_image(self, img_input: str, prompt: str = None, use_structured_output: bool = True) -> Tuple[Optional[str], Optional[str]]:
+        """使用独立视觉分析模块分析图像
         
         Args:
             img_input: 图片URL或base64编码
-            prompt: 分析提示词
+            prompt: 分析提示词，如果为None则使用默认城市体检提示词
+            use_structured_output: 是否使用结构化输出
             
         Returns:
             Tuple[str, str]: (分析结果文本, 使用的模型名称)
         """
-        # 获取当前激活的视觉模型
-        active_vision = ACTIVE_MODELS.get("vision")
-        if not active_vision or active_vision not in self.vision_clients:
-            print(f"错误: 未找到有效的视觉模型'{active_vision}'")
-            return None, None
-            
-        # 尝试使用主视觉模型
-        model_config = MODELS["vision_models"].get(active_vision)
-        analysis_text = None
-        model_used = None
-        # 尝试主视觉模型
-        try:
-            if model_config["type"] == "openai":
-                analysis_text = self._analyze_with_openai(active_vision, img_input, prompt, model_config)
-                model_used = active_vision
-            elif model_config["type"] == "google":
-                analysis_text = self._analyze_with_google(active_vision, img_input, prompt, model_config)
-                model_used = active_vision
-        except Exception as e:
-            print(f"主视觉模型 {active_vision} 分析失败: {e}")
-        
-        # 如果主模型失败，尝试其他可用模型
-        if not analysis_text:
-            for model_name, config in MODELS["vision_models"].items():
-                if model_name == active_vision:  # 跳过已尝试的主模型
-                    continue
-                    
-                if model_name in self.vision_clients:
-                    try:
-                        print(f"尝试使用备用视觉模型: {model_name}")
-                        if config["type"] == "openai":
-                            analysis_text = self._analyze_with_openai(model_name, img_input, prompt, config)
-                        elif config["type"] == "google":
-                            analysis_text = self._analyze_with_google(model_name, img_input, prompt, config)
-                            
-                        if analysis_text:
-                            model_used = f"{model_name} (备用)"
-                            break
-                    except Exception as e:
-                        print(f"备用视觉模型 {model_name} 分析失败: {e}")
-        
-        return analysis_text, model_used
-        
-    def _analyze_with_openai(self, model_name: str, img_input: str, prompt: str, config: Dict) -> Optional[str]:
-        """使用OpenAI兼容的API分析图像"""
-        client = self.vision_clients[model_name]
-        
-        # 判断输入是URL还是base64
-        is_base64 = img_input.startswith('data:image')
-        
-        # 使用OpenAI兼容API调用视觉模型
-        completion = client.chat.completions.create(
-            model=config["model_id"],
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": img_input}},
-                        {"type": "text", "text": prompt}
-                    ]
-                }
-            ],
-            timeout=30
-        )
-        return completion.choices[0].message.content
-    
-    def _analyze_with_google(self, model_name: str, img_input: str, prompt: str, config: Dict) -> Optional[str]:
-        """使用Google API分析图像"""
-        print(f"使用Google API分析图像: {config['model_id']}")
-        genai_client = self.vision_clients[model_name]
-        
-        try:
-            # 判断输入是URL还是base64
-            if img_input.startswith('data:image'):
-                # 从base64字符串中提取实际的base64编码部分
-                base64_data = img_input.split(',', 1)[1]
-                # 解码base64为二进制数据
-                image_bytes = base64.b64decode(base64_data)
-                
-                # 确定MIME类型
-                mime_type = 'image/jpeg'  # 默认
-                if img_input.startswith('data:image/png'):
-                    mime_type = 'image/png'
-                elif img_input.startswith('data:image/webp'):
-                    mime_type = 'image/webp'
-                elif img_input.startswith('data:image/gif'):
-                    mime_type = 'image/gif'
-                
-                # 使用types.Part.from_bytes创建图像部分
-                image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-                contents = [image_part, prompt]
-            else:
-                # 处理URL图片 - 下载图片数据
-                response = requests.get(img_input)
-                response.raise_for_status()
-                image_bytes = response.content
-                
-                # 根据URL推断MIME类型
-                mime_type = 'image/jpeg'  # 默认
-                if img_input.lower().endswith('.png'):
-                    mime_type = 'image/png'
-                elif img_input.lower().endswith('.webp'):
-                    mime_type = 'image/webp'
-                elif img_input.lower().endswith('.gif'):
-                    mime_type = 'image/gif'
-                
-                # 使用types.Part.from_bytes创建图像部分
-                image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-                contents = [prompt, image_part]
-            # 生成内容
-            response = genai_client.models.generate_content(
-                model = config["model_id"],
-                contents = contents
-            )
-            # print(response.text)
-            # 提取分析结果
-            if hasattr(response, 'text'):
-                return response.text
-            else:
-                return str(response)
-                
-        except Exception as e:
-            print(f"Google API分析图片失败: {e}")
-            return None
+        return self.vision_analyzer.analyze_image(img_input, prompt, use_structured_output)
+
     
     def process_documents(self, directory: str = None) -> bool:
         """处理文档目录"""
@@ -259,7 +101,7 @@ class RAGSystem:
             
         print("开始加载文档...")
         # 在处理文档前先删除索引
-        self.es_store.delete_index()  # 删除现有索引
+        self.chroma_store.delete_index()  # 删除现有索引
         documents = self.document_loader.load_directory(directory)
         if not documents:
             print("没有找到可处理的文档")
@@ -271,7 +113,7 @@ class RAGSystem:
         documents = self.embedder.embed_documents(documents)
         
         print("开始存储到Chroma...")
-        success = self.es_store.add_documents(documents)
+        success = self.chroma_store.add_documents(documents)
         if not success:
             print("存储文档时出错")
             return False
@@ -305,19 +147,6 @@ class RAGSystem:
         
         # 如果包含图片，先用视觉模型处理，然后结合向量检索结果
         if img_input:
-            # 定义视觉模型提示词
-            # vl_prompt = "你是一位建筑安全专家，分析以下施工现场图片并识别潜在的安全隐患以及隐患位置。注意不要讲你没有看到的信息。"
-            # vl_prompt = """你是一位城市体检专家，分析以下城市建筑图片并列出图片属于哪种安全隐患（请从下列指标中，选择一项最符合当前情况的类型：
-            #                 存在结构安全隐患的住宅
-            #                 存在燃气安全隐患的住宅
-            #                 存在楼道安全隐患的住宅
-            #                 存在围护安全隐患的住宅
-            #                 非成套住宅
-            #                 存在管线管道破损的住宅
-            #                 需要进行适老化改造的住宅
-            #                 需要进行节能改造的住宅
-            #                 需要进行数字化改造的住宅）
-            #                 并分析体检依据，注意不要讲你没有看到的信息。"""
             vl_prompt = PROMPT_CONFIG["vision_analysis"]["city_inspection"]
             # 调用视觉分析方法
             vl_text, model_used = self.analyze_image(img_input, vl_prompt)
@@ -351,7 +180,7 @@ class RAGSystem:
                 # 路径1：使用视觉分析文本进行检索
                 print("路径1：使用视觉分析文本进行检索...")
                 vl_vector = self.embedder.embed_text(vl_text)
-                text_documents = self.es_store.search(vl_text, vl_vector)
+                text_documents = self.chroma_store.search(vl_text, vl_vector)
                 # 保存文本检索结果
                 self.save_search_results(vl_text, text_documents, img_input, prefix="text_vector_search_result", search_type="text")
                 
@@ -361,7 +190,7 @@ class RAGSystem:
                     # 获取图像向量
                     image_vector = self.embedder.embed_image(img_input)
                     # 使用图像向量检索
-                    image_documents = self.es_store.search("", image_vector)
+                    image_documents = self.chroma_store.search("", image_vector)
                     print(f"图像检索结果: {len(image_documents)} 条")
                     # 保存图像检索结果
                     self.save_search_results("图像查询", image_documents, img_input, prefix="image_vector_search_result", search_type="image")
@@ -393,7 +222,7 @@ class RAGSystem:
                 # 传统单路检索
                 print("使用传统单路检索...")
                 vl_vector = self.embedder.embed_text(vl_text)
-                documents = self.es_store.search(vl_text, vl_vector)
+                documents = self.chroma_store.search(vl_text, vl_vector)
                 
                 if not documents:
                     print("未找到相关的知识库内容")
@@ -588,7 +417,7 @@ class RAGSystem:
             # 生成查询向量
             query_vector = self.embedder.embed_text(query)
             # 检索相关文档
-            documents = self.es_store.search(query, query_vector)
+            documents = self.chroma_store.search(query, query_vector)
             if not documents:
                 result["status"] = "success"
                 result["answer"] = "抱歉，没有找到相关的参考信息。"
@@ -622,8 +451,14 @@ class RAGSystem:
                 }
             }
         """
+        if isinstance(visual_analysis, dict):
+            visual_text = json.dumps(visual_analysis, ensure_ascii=False)
+            visual_text = visual_text.replace("indicator_classification", "指标分类")
+            visual_text = visual_text.replace("specific_problem", "具体问题")
+            visual_text = visual_text.replace("detailed_description", "详细描述")
+        
         result = {
-            "visual_analysis": visual_analysis,  # 添加视觉分析结果
+            "visual_analysis": visual_text,  # 添加视觉分析结果
             "answer": None,
             "status": "processing",
             "models_used": {
@@ -640,11 +475,11 @@ class RAGSystem:
                 
                 # 路径1：使用视觉分析文本进行检索
                 print("路径1：使用视觉分析文本进行检索...")
-                vl_vector = self.embedder.embed_text(visual_analysis)
-                text_documents = self.es_store.search(visual_analysis, vl_vector)
+                vl_vector = self.embedder.embed_text(visual_text)
+                text_documents = self.chroma_store.search(visual_text, vl_vector)
                 print(f"文本检索结果: {len(text_documents)} 条")
                 # 保存文本检索结果 - 统一前缀名称
-                self.save_search_results(visual_analysis, text_documents, img_input, prefix="text_vector_search_result", search_type="text")
+                self.save_search_results(visual_text, text_documents, img_input, prefix="text_vector_search_result", search_type="text")
                 
                 # 路径2：使用图像直接进行检索
                 print("路径2：使用图像向量直接检索...")
@@ -652,7 +487,7 @@ class RAGSystem:
                     # 获取图像向量
                     image_vector = self.embedder.embed_image(img_input)
                     # 使用图像向量检索
-                    image_documents = self.es_store.search("", image_vector)
+                    image_documents = self.chroma_store.search("", image_vector)
                     print(f"图像检索结果: {len(image_documents)} 条")
                     # 保存图像检索结果 - 统一前缀名称
                     self.save_search_results("图像查询", image_documents, img_input, prefix="image_vector_search_result", search_type="image")
@@ -669,36 +504,36 @@ class RAGSystem:
                     self.save_search_results(f"融合查询(文本+图像)", merged_documents, img_input, prefix="merged_search_result", search_type="merged")
                     
                     # 重排序
-                    # reranked_docs = self.reranker.rerank(visual_analysis, merged_documents)
-                    reranked_docs = merged_documents[:3]
+                    reranked_docs = self.reranker.rerank(visual_analysis, merged_documents)
+                    # reranked_docs = merged_documents[:3]
                     print(f"重排序后的结果数量: {len(reranked_docs)} 条")
                     
                     # 保存最终检索结果到日志目录 - 统一前缀名称
-                    self.save_search_results(visual_analysis, reranked_docs, img_input, prefix="final_search_result", search_type="final")
+                    self.save_search_results(visual_text, reranked_docs, img_input, prefix="final_search_result", search_type="final")
                 else:
                     print("两路检索均未找到相关内容")
                     result["status"] = "success"
-                    result["answer"] = f"分析结果：\n\n{visual_analysis}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
+                    result["answer"] = f"分析结果：\n\n{visual_text}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
                     return result
                 # ===== 双路检索结束 =====
             else:
                 # 传统单路检索
                 print("使用传统单路检索...")
-                vl_vector = self.embedder.embed_text(visual_analysis)
-                documents = self.es_store.search(visual_analysis, vl_vector)
+                vl_vector = self.embedder.embed_text(visual_text)
+                documents = self.chroma_store.search(visual_text, vl_vector)
                 
                 if not documents:
                     print("未找到相关的知识库内容")
                     result["status"] = "success"
-                    result["answer"] = f"分析结果：\n\n{visual_analysis}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
+                    result["answer"] = f"分析结果：\n\n{visual_text}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
                     return result
                 
                 # 重排序
-                # reranked_docs = self.reranker.rerank(visual_analysis, documents)
-                reranked_docs = documents[:3]
+                reranked_docs = self.reranker.rerank(visual_analysis, documents)
+                # reranked_docs = documents[:3]
                 print(f"找到相关知识库内容: {len(reranked_docs)} 条")
                 # 保存检索结果到日志目录 - 统一前缀名称
-                self.save_search_results(visual_analysis, reranked_docs, img_input, prefix="visual_search_result")
+                self.save_search_results(visual_text, reranked_docs, img_input, prefix="visual_search_result")
                 
                 # 对于单路检索，image_documents为空列表
                 image_documents = []
@@ -710,7 +545,7 @@ class RAGSystem:
                 
             # 这将作为第一个参考文档出现在引用中
             vl_document = {
-                "content": f"视觉模型分析结果：{visual_analysis}",
+                "content": f"视觉模型分析结果：{visual_text}",
                 "metadata": {
                     "source": "视觉分析",
                     "img_path": img_source
@@ -871,6 +706,7 @@ class RAGSystem:
                 
                 # 设置修改后的系统提示词
                 self.generator._system_prompt = getattr(self.generator, "_modified_system_prompt", system_prompt)
+                # print(self.generator._system_prompt)
                 
                 # 调用generator生成回答
                 answer = self.generator.generate(query, final_docs)
@@ -1036,42 +872,7 @@ def batch_docx_to_markdown(docx_dir: str, output_dir: str = "output") -> list:
             md_files.append(md_file)
     return md_files
 
-# VLM图片理解API（Qwen-VL）- 使用图片URL
-def vlm_api_func(img_path, context):
-    # 上传本地图片到图床服务，获取公网URL
-    try:
-        img_url = upload_image(img_path)
-    except Exception as e:
-        print(f"图片上传失败: {img_path}, 错误: {e}")
-        return "None"
-    
-    prompt = PROMPT_CONFIG["vision_analysis"]["simple_description"]
-    # 获取通义千问视觉模型配置
-    qwen_config = MODELS["vision_models"]["qwen-vl"]
-    client = OpenAI(
-        api_key=qwen_config["api_key"],
-        base_url=qwen_config["base_url"],
-    )
-    try:
-        completion = client.chat.completions.create(
-            model=qwen_config["model_id"],
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": img_url}}
-                ]
-            }],
-            timeout=30
-        )
-        desc = completion.choices[0].message.content
-        return desc
-    except Exception as e:
-        print(f"VLM API调用失败: {img_path}, 错误: {e}")
-        # 尝试使用base64方式调用
-        return vlm_api_base64(img_path, context)
-
-# VLM图片理解API（Qwen-VL）- 使用Base64
+# VLM图片理解API（Base64）
 def vlm_api_base64(img_path, context):
     """使用Base64编码的图片调用视觉模型API"""
     try:
@@ -1116,150 +917,6 @@ def vlm_api_base64(img_path, context):
         print(f"Base64 VLM API调用失败: {img_path}, 错误: {e}")
         return "None"
 
-def vlm_api_func1(img_path, context):
-      # TODO: 替换为实际VLM API调用
-      return "示例图片描述：包含有意义的信息。"
-
-# 定义一个通用的API调用函数，支持不同的模型类型
-def call_language_model_api(prompt: str, model_name: str = None, temperature: float = 0.7, max_tokens: int = 2000) -> str:
-    """调用语言模型API生成文本，支持多种模型类型
-    
-    Args:
-        prompt: 提示词
-        model_name: 指定要使用的语言模型名称，默认使用active_model
-        temperature: 温度参数，控制生成的随机性
-        max_tokens: 最大生成token数
-        
-    Returns:
-        生成的文本回答
-    """
-    # 获取当前激活的语言模型
-    active_model = model_name or ACTIVE_MODELS.get("language")
-    
-    # 获取模型配置
-    if active_model not in MODELS["language_models"]:
-        raise ValueError(f"未找到指定的语言模型配置: {active_model}")
-    
-    model_config = MODELS["language_models"][active_model]
-    
-    # 根据模型类型调用不同的API
-    if model_config["type"] == "openai":
-        # 对于兼容OpenAI接口的模型（如火山引擎模型）
-        try:
-            # 创建OpenAI客户端
-            client = OpenAI(
-                api_key=model_config["api_key"],
-                base_url=model_config["base_url"],
-            )
-            
-            # 使用客户端调用API
-            response = client.chat.completions.create(
-                model=model_config["model_id"],
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-            
-            # 返回生成的文本
-            return response.choices[0].message.content
-                
-        except Exception as e:
-            print(f"{active_model} API调用失败: {str(e)}")
-            raise
-    
-    elif model_config["type"] == "google":
-        # 对于Google Gemini模型
-        try:
-            # 创建Client对象
-            client = genai.Client(api_key=model_config["api_key"])
-            
-            # 生成内容
-            response = client.models.generate_content(
-                model=model_config["model_id"],
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    max_output_tokens=max_tokens,
-                    temperature=temperature
-                )
-            )
-            
-            # 返回文本
-            if hasattr(response, 'text'):
-                return response.text
-            else:
-                return str(response)
-                
-        except Exception as e:
-            print(f"{active_model} API调用失败: {str(e)}")
-            raise
-    
-    else:
-        raise ValueError(f"不支持的模型类型: {model_config['type']}")
-
-# 保留旧函数名以向后兼容
-def call_volcengine_api(prompt: str, temperature: float = 0.7, max_tokens: int = 2000) -> str:
-    """向后兼容的函数，调用火山引擎API生成文本，内部使用call_language_model_api
-    
-    Args:
-        prompt: 提示词
-        temperature: 温度参数，控制生成的随机性
-        max_tokens: 最大生成token数
-        
-    Returns:
-        生成的文本回答
-    """
-    # 直接使用volcengine模型
-    return call_language_model_api(prompt, "volcengine", temperature, max_tokens)
-
-def get_image_embedding_by_volc(image_base64: str) -> list:
-    """
-    调用火山API将base64图片转为embedding向量
-    :param image_base64: base64图片字符串（data:image/...;base64,...）
-    :return: embedding向量（list[float]），失败返回None
-    """
-    # api_key = os.environ.get("ARK_API_KEY")
-    # if not api_key:
-    #     print("未检测到ARK_API_KEY环境变量，无法调用火山图片embedding API")
-    #     return None
-    client = Ark(api_key='a510e12d-c2b0-4382-b73a-e525cbe60e55')
-    # 提取base64纯数据部分
-    # if image_base64.startswith("data:image"):
-    #     base64_data = image_base64.split(",", 1)[1]
-    # else:
-    base64_data = image_base64
-    try:
-        resp = client.multimodal_embeddings.create(
-            model="doubao-embedding-vision-241215",
-            encoding_format="float",
-            input=[{"image_url": {"url": base64_data}, "type": "image_url"}]
-        )
-        embedding = resp.data["embedding"]
-        return embedding
-    except Exception as e:
-        print(f"火山图片embedding API调用失败: {e}")
-        return None
-
-def get_text_embedding_by_volc(text: str) -> list:
-    """
-    调用火山API将文本转为embedding向量
-    :param text: 文本字符串
-    :return: embedding向量（list[float]），失败返回None
-    """
-    client = Ark(api_key='a510e12d-c2b0-4382-b73a-e525cbe60e55')
-    try:
-        resp = client.multimodal_embeddings.create(
-            model="doubao-embedding-vision-241215",
-            encoding_format="float",
-            input=[{"text": text, "type": "text"}]
-        )
-        embedding = resp.data["embedding"] if isinstance(resp.data, dict) else resp.data[0].embedding
-        return embedding
-    except Exception as e:
-        print(f"火山文本embedding API调用失败: {e}")
-        return None
-
 def main(rebuild_index=False):
     raw_dir = "./data/raw"
     output_dir = "./output"
@@ -1276,8 +933,8 @@ def main(rebuild_index=False):
             print(f"已加载 {len(embedded_chunks)} 个向量化chunk")
             
             print("[2/2] 存储到Chroma...")
-            es_store = ChromaStore()
-            success = es_store.add_documents(embedded_chunks)
+            chroma_store = ChromaStore()
+            success = chroma_store.add_documents(embedded_chunks)
             if success:
                 print("全部chunk已存入Chroma数据库！")
             else:
@@ -1346,7 +1003,7 @@ def main(rebuild_index=False):
         print("未分出任何chunk，流程终止。")
         return
 
-    print("[3/6] 并发VLM图片理解...")
+    print("[3/6] 分离图像和文本切块...")
     text_chunks = [c for c in all_chunks if c["type"] == "text"]
     image_chunks = [c for c in all_chunks if c["type"] == "image"]
     print(f"待处理图片chunk数: {len(image_chunks)}，文本chunk数: {len(text_chunks)}")
@@ -1395,8 +1052,8 @@ def main(rebuild_index=False):
             print(f"保存知识库快照失败: {e}")
 
     print("[6/6] 存储到Chroma...")
-    es_store = ChromaStore()
-    success = es_store.add_documents(embedded_chunks)
+    chroma_store = ChromaStore()
+    success = chroma_store.add_documents(embedded_chunks)
     
     if success:
         print("全部chunk已存入Chroma数据库！")

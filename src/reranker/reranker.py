@@ -75,11 +75,12 @@ class Reranker:
             return []
         
         # 提取问题名用于重排序
-        problem_name = self.extract_problem_name(query)
-        print(f"提取的问题名: {problem_name}")
+        # problem_name = self.extract_problem_name(query)
+        indicator_title = query.get("indicator_classification")
+        print(f"提取的指标名称: {indicator_title}")
             
         # 准备输入对 - 使用提取的问题名与文档的indicator_title进行匹配
-        pairs = [(problem_name, doc["metadata"]["indicator_title"]) for doc in documents]
+        pairs = [(indicator_title, doc["metadata"]["indicator_title"]) for doc in documents]
         
         # 计算相关性分数
         scores = self.model.predict(

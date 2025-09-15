@@ -12,7 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from werkzeug.utils import secure_filename
-from main import RAGSystem, image_to_base64
+from main import RAGSystem
+from src.vision_analyzer import VisionAnalyzer
+from src.utils.image_tools import image_to_base64
 from src.storage.chroma_store import ChromaStore
 from config.config import PROMPT_CONFIG
 
@@ -78,6 +80,7 @@ class AnalyzeImageRequest(BaseModel):
     query: str
     image_url: Optional[str] = None
     image_base64: Optional[str] = None
+    use_structured_output: Optional[bool] = True  # 新增：是否使用结构化输出
 
 
 class AnalyzeImageResponse(BaseModel):
@@ -86,6 +89,7 @@ class AnalyzeImageResponse(BaseModel):
     visual_analysis: str
     models_used: Dict[str, Optional[str]]
     timestamp: float
+    is_structured: bool = False  # 新增：标识是否为结构化输出
 
 
 class CompleteAnswerRequest(BaseModel):
@@ -154,9 +158,10 @@ async def analyze_image(request: AnalyzeImageRequest):
         # 选择图片输入源
         img_input = request.image_base64 if request.image_base64 else request.image_url
         
-        # 调用RAG系统执行视觉分析
+        # 调用RAG系统执行视觉分析（支持结构化输出）
         vl_prompt = PROMPT_CONFIG["vision_analysis"]["city_inspection"]
-        vl_text, model_used = rag.analyze_image(img_input, vl_prompt)
+        use_structured = True
+        vl_text, model_used = rag.analyze_image(img_input, vl_prompt, use_structured)
         
         # 添加失败重试机制（与query函数保持一致）
         if not vl_text and os.path.exists(img_input):
@@ -164,7 +169,7 @@ async def analyze_image(request: AnalyzeImageRequest):
             try:
                 base64_image = image_to_base64(img_input)
                 if base64_image:
-                    vl_text, model_used = rag.analyze_image(base64_image, vl_prompt)
+                    vl_text, model_used = rag.analyze_image(base64_image, vl_prompt, use_structured)
                     model_used = f"{model_used} (本地文件转base64)"
             except Exception as e:
                 print(f"本地文件转base64调用失败: {e}")
@@ -182,17 +187,24 @@ async def analyze_image(request: AnalyzeImageRequest):
             "img_input": img_input,
             "timestamp": time.time()
         }
-        
+        if isinstance(vl_text, dict):
+            visual_analysis=json.dumps(vl_text, ensure_ascii=False)
+            visual_analysis = visual_analysis.replace("indicator_classification", "指标分类")
+            visual_analysis = visual_analysis.replace("specific_problem", "具体问题")
+            visual_analysis = visual_analysis.replace("detailed_description", "详细描述")
+        else:
+            visual_analysis=vl_text
         # 构建并返回响应
         return AnalyzeImageResponse(
             session_id=session_id,
             status="success",
-            visual_analysis=vl_text,
+            visual_analysis=visual_analysis,
             models_used={
                 "vision": model_used,
                 "language": None
             },
-            timestamp=time.time()
+            timestamp=time.time(),
+            is_structured=use_structured
         )
         
     except HTTPException:

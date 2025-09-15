@@ -120,21 +120,37 @@ venv\Scripts\activate     # Windows
 pip install -r requirements.txt
 ```
 
-### 4. 配置环境变量
-创建 `.env` 文件：
+### 4. 配置API密钥
+在 `config/config.py` 文件中配置相关API密钥：
+
+```python
+# 火山引擎API配置
+ARK_API_KEY = os.environ.get("ARK_API_KEY", "your_volcengine_api_key")
+
+# Google Gemini API配置  
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "your_google_api_key")
+
+# 通义千问API配置
+QWEN_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "your_qwen_api_key")
+```
+
+**方式一：直接修改config.py**
+直接将API密钥替换为你的实际密钥值。
+
+**方式二：设置环境变量**
 ```bash
-# API密钥配置
-QWEN_API_KEY=your_qwen_api_key
-GOOGLE_API_KEY=your_google_api_key
-VOLCENGINE_API_KEY=your_volcengine_api_key
+export ARK_API_KEY=your_volcengine_api_key
+export GEMINI_API_KEY=your_google_api_key  
+export DASHSCOPE_API_KEY=your_qwen_api_key
+```
 
-# 模型配置
-ACTIVE_EMBEDDING=text2vec-base-chinese
-ACTIVE_VISION=qwen-vl
-ACTIVE_LANGUAGE=volcengine
-
-# 数据库配置
-CHROMA_PERSIST_DIRECTORY=./chroma_db
+在 `ACTIVE_MODELS` 中配置使用的模型：
+```python
+ACTIVE_MODELS = {
+    "vision": "gemini",        # 视觉分析模型
+    "language": "gemini",      # 语言生成模型
+    "embedding": "chinese-clip" # 向量嵌入模型
+}
 ```
 
 ### 5. 准备数据
@@ -394,12 +410,6 @@ uv run python run.py --reload
 3. 提交更改：`git commit -m 'Add some amazing feature'`
 4. 推送分支：`git push origin feature/amazing-feature`
 5. 提交Pull Request
-
-### 代码规范
-- 遵循PEP 8 Python代码规范
-- 添加必要的注释和文档字符串
-- 保持代码简洁和可读性
-- 添加单元测试覆盖新功能
 
 ## 📄 许可证
 

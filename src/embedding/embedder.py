@@ -294,6 +294,24 @@ class Embedder:
         # 处理文本文档
         if text_docs:
             texts = [doc["content"] for doc in text_docs]
+            
+            # 保存文本内容到文件
+            import json
+            output_dir = "logs"
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # 保存texts列表到JSON文件
+            texts_file = os.path.join(output_dir, f"texts_content.json")
+            try:
+                with open(texts_file, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "total_texts": len(texts),
+                        "texts": texts
+                    }, f, ensure_ascii=False, indent=2)
+                print(f"已保存 {len(texts)} 个文本内容到: {texts_file}")
+            except Exception as e:
+                print(f"保存文本内容失败: {e}")
+            
             text_embeddings = self.embed_batch(texts)
             for doc, embedding in zip(text_docs, text_embeddings):
                 doc["embedding"] = embedding
