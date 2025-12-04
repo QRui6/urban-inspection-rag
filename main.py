@@ -12,9 +12,10 @@ from src.storage.chroma_store import ChromaStore
 from src.reranker.reranker import Reranker
 from src.generator.generator import Generator
 from src.vision_analyzer import VisionAnalyzer
-from config.config import RAW_DATA_DIR, GENERATOR_CONFIG, MODELS, ACTIVE_MODELS, PROMPT_CONFIG
-from src.document_loader.pdf2md import batch_pdf_to_markdown
-from src.document_loader.md_loader_optimized import MarkdownChunkLoader
+from config.config import RAW_DATA_DIR, GENERATOR_CONFIG, MODELS, ACTIVE_MODELS, PROMPT_CONFIG,LOGS_DIR
+# from src.document_loader.pdf2md import batch_pdf_to_markdown
+# from src.document_loader.md_loader_optimized import MarkdownChunkLoader
+from src.document_loader.md_loader_final import MarkdownChunkLoader
 from src.document_loader.vlm_batch import batch_vlm_describe
 from openai import OpenAI
 from google import genai
@@ -27,17 +28,15 @@ import datetime
 class RAGSystem:
     """RAG系统主类"""
     
-    def __init__(self, dual_retrieval: bool = True):
+    # def __init__(self, dual_retrieval: bool = True):
+    def __init__(self):
         self.document_loader = DocumentLoader()
         self.embedder = Embedder()
         self.chroma_store = ChromaStore()
         self.reranker = Reranker()
         self.generator = Generator()
         self.vision_analyzer = VisionAnalyzer()  # 使用独立的视觉分析模块
-        
-        # 是否启用双路检索
-        self.dual_retrieval = dual_retrieval
-        
+    
         # 初始化模型客户端
         self.vision_clients = {}
         self.language_clients = {}
@@ -169,73 +168,38 @@ class RAGSystem:
                 result["answer"] = "图片分析失败，无法提供安全隐患评估。"
                 return result
             
-            # 设置视觉分析结果到返回对象中
-            result["visual_analysis"] = vl_text
-            
-            # 使用视觉模型输出作为查询，检索相关文档
-            if self.dual_retrieval:
-                # ===== 双路检索开始 =====
-                print("开始双路检索...")
-                
-                # 路径1：使用视觉分析文本进行检索
-                print("路径1：使用视觉分析文本进行检索...")
-                vl_vector = self.embedder.embed_text(vl_text)
-                text_documents = self.chroma_store.search(vl_text, vl_vector)
-                # 保存文本检索结果
-                self.save_search_results(vl_text, text_documents, img_input, prefix="text_vector_search_result", search_type="text")
-                
-                # 路径2：使用图像直接进行检索
-                print("路径2：使用图像向量直接检索...")
-                try:
-                    # 获取图像向量
-                    image_vector = self.embedder.embed_image(img_input)
-                    # 使用图像向量检索
-                    image_documents = self.chroma_store.search("", image_vector)
-                    print(f"图像检索结果: {len(image_documents)} 条")
-                    # 保存图像检索结果
-                    self.save_search_results("图像查询", image_documents, img_input, prefix="image_vector_search_result", search_type="image")
-                except Exception as e:
-                    print(f"图像向量检索失败: {e}")
-                    image_documents = []
-                
-                # 融合两路检索结果
-                if text_documents or image_documents:
-                    print("融合两路检索结果...")
-                    merged_documents = self._merge_search_results(text_documents, image_documents)
-                    print(f"融合后的结果数量: {len(merged_documents)} 条")
-                    # 保存融合结果
-                    self.save_search_results(f"融合查询(文本+图像)", merged_documents, img_input, prefix="merged_search_result", search_type="merged")
-                    
-                    # 重排序
-                    reranked_docs = self.reranker.rerank(vl_text, merged_documents)
-                    print(f"重排序后的结果数量: {len(reranked_docs)} 条")
-                    
-                    # 保存最终检索结果到日志目录
-                    self.save_search_results(vl_text, reranked_docs, img_input, prefix="final_search_result", search_type="final")
-                else:
-                    print("两路检索均未找到相关内容")
-                    result["status"] = "success"
-                    result["answer"] = f"分析结果：\n\n{vl_text}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
-                    return result
-                # ===== 双路检索结束 =====
+            # 处理视觉分析结果：如果是字典，转换为字符串
+            if isinstance(vl_text, dict):
+                visual_text = json.dumps(vl_text, ensure_ascii=False)
+                visual_text = visual_text.replace("indicator_classification", "指标分类")
+                visual_text = visual_text.replace("specific_problem", "具体问题")
+                visual_text = visual_text.replace("detailed_description", "详细描述")
             else:
-                # 传统单路检索
-                print("使用传统单路检索...")
-                vl_vector = self.embedder.embed_text(vl_text)
-                documents = self.chroma_store.search(vl_text, vl_vector)
+                visual_text = vl_text
+            
+            # 设置视觉分析结果到返回对象中（用于API响应）
+            result["visual_analysis"] = visual_text
+            
+            # 传统单路检索（使用字符串格式）
+            print("使用文本检索...")
+            vl_vector = self.embedder.embed_text(visual_text)
+            documents = self.chroma_store.search(visual_text, vl_vector)
+
+            print(f"找到相关知识库内容: ",documents)
                 
-                if not documents:
-                    print("未找到相关的知识库内容")
-                    result["status"] = "success"
-                    result["answer"] = f"分析结果：\n\n{vl_text}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
-                    return result
+            if not documents:
+                print("未找到相关的知识库内容")
+                result["status"] = "success"
+                result["answer"] = f"分析结果：\n\n{visual_text}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
+                return result
                 
-                # 重排序
-                reranked_docs = self.reranker.rerank(vl_text, documents)
-                print(f"找到相关知识库内容: {len(reranked_docs)} 条")
+            # 重排序
+            reranked_docs = self.reranker.rerank(visual_text, documents)
+            print(f"找到相关知识库内容: {len(reranked_docs)} 条")
                 
-                # 保存检索结果到日志目录
-                self.save_search_results(vl_text, reranked_docs, img_input, prefix="visual_search_result")
+            # 保存检索结果到日志目录
+            self.save_search_results(visual_text, reranked_docs, img_input, prefix="visual_search_result")
+            # image_documents = []    
             
             # 创建包含视觉分析结果的自定义文档对象
             img_source = "视觉模型分析图片"
@@ -244,7 +208,7 @@ class RAGSystem:
                 
             # 这将作为第一个参考文档出现在引用中
             vl_document = {
-                "content": f"视觉模型分析结果：{vl_text}",
+                "content": f"视觉模型分析结果：{visual_text}",
                 "metadata": {
                     "source": "视觉分析",
                     "img_path": img_source
@@ -274,7 +238,7 @@ class RAGSystem:
                 def custom_create_prompt(generator_self, q, docs):
                     # 提取文档内容
                     text_contents = []
-                    image_contents = []
+                    # image_contents = []
                     
                     # 用户照片（第一个文档是视觉分析结果，包含用户照片路径）
                     user_photo = ""
@@ -291,23 +255,10 @@ class RAGSystem:
                             text_contents.append(f"[视觉分析结果]: \"{content}\"")
                             continue
                             
-                        # 检查是否为图片文档
-                        is_image = False
-                        if "type" in metadata and metadata["type"] == "image":
-                            is_image = True
-                        elif "img_path" in metadata and metadata["img_path"]:
-                            is_image = True
-                        
-                        if is_image:
-                            # 这是一个图片文档
-                            img_path = metadata.get("img_path", "")
-                            if img_path:
-                                image_contents.append(f"[案例图片 {len(image_contents)+1}]: {img_path}")
-                        else:
-                            # 这是一个文本文档
-                            source = metadata.get("source", "")
-                            source_name = os.path.basename(source) if source else f"检索到的文本块 {len(text_contents)}"
-                            text_contents.append(f"[{source_name}]: \"{content}\"")
+                        # 这是一个文本文档
+                        source = metadata.get("source", "")
+                        source_name = os.path.basename(source) if source else f"检索到的文本块 {len(text_contents)}"
+                        text_contents.append(f"[{source_name}]: \"{content}\"")
                     
                     # 构建知识库文本依据部分
                     text_context = "\n".join(text_contents)
@@ -362,26 +313,6 @@ class RAGSystem:
                         modified_system_prompt = modified_system_prompt.replace("{retrieved_chunk_2_content}", "")
                         modified_system_prompt = modified_system_prompt.replace("{retrieved_chunk_2_metadata}", "")
                     
-                    # 构建知识库参考案例图片部分
-                    case_photos = []
-                    # 直接从image_documents中提取图片路径
-                    for doc in image_documents[:2]:  # 只取前两张最相似的图片
-                        metadata = doc.get("metadata", {})
-                        img_path = metadata.get("img_path", "")
-                        if img_path:
-                            case_photos.append(img_path)
-
-                    # 如果有案例图片，替换占位符
-                    if len(case_photos) >= 1:
-                        modified_system_prompt = modified_system_prompt.replace("<retrieved_case_photo_1_placeholder>", case_photos[0])
-                    else:
-                        modified_system_prompt = modified_system_prompt.replace("<retrieved_case_photo_1_placeholder>", "无相关案例图片")
-                        
-                    if len(case_photos) >= 2:
-                        modified_system_prompt = modified_system_prompt.replace("<retrieved_case_photo_2_placeholder>", case_photos[1])
-                    else:
-                        modified_system_prompt = modified_system_prompt.replace("<retrieved_case_photo_2_placeholder>", "无相关案例图片")
-                    
                     # 自定义提示词，结合视觉分析和知识库内容
                     prompt = f"{user_query}\n\n参考资料：\n{text_context}"
                     
@@ -415,7 +346,9 @@ class RAGSystem:
         # 没有图片的情况，走传统RAG流程
         else:
             # 生成查询向量
+            print(query)
             query_vector = self.embedder.embed_text(query)
+            print(query_vector)
             # 检索相关文档
             documents = self.chroma_store.search(query, query_vector)
             if not documents:
@@ -468,75 +401,28 @@ class RAGSystem:
         }
         
         try:
-            # 使用视觉分析结果作为查询，检索相关文档
-            if self.dual_retrieval:
-                # ===== 双路检索开始 =====
-                print("开始双路检索...")
+            # 使用传统单路检索
+            print("使用传统单路检索...")
+            vl_vector = self.embedder.embed_text(visual_text)
+            documents = self.chroma_store.search(visual_text, vl_vector)
+            print("visual_text",visual_text)
+            print("vl_vector",vl_vector)
+            print("documents",documents)
                 
-                # 路径1：使用视觉分析文本进行检索
-                print("路径1：使用视觉分析文本进行检索...")
-                vl_vector = self.embedder.embed_text(visual_text)
-                text_documents = self.chroma_store.search(visual_text, vl_vector)
-                print(f"文本检索结果: {len(text_documents)} 条")
-                # 保存文本检索结果 - 统一前缀名称
-                self.save_search_results(visual_text, text_documents, img_input, prefix="text_vector_search_result", search_type="text")
-                
-                # 路径2：使用图像直接进行检索
-                print("路径2：使用图像向量直接检索...")
-                try:
-                    # 获取图像向量
-                    image_vector = self.embedder.embed_image(img_input)
-                    # 使用图像向量检索
-                    image_documents = self.chroma_store.search("", image_vector)
-                    print(f"图像检索结果: {len(image_documents)} 条")
-                    # 保存图像检索结果 - 统一前缀名称
-                    self.save_search_results("图像查询", image_documents, img_input, prefix="image_vector_search_result", search_type="image")
-                except Exception as e:
-                    print(f"图像向量检索失败: {e}")
-                    image_documents = []
-                
-                # 融合两路检索结果
-                if text_documents or image_documents:
-                    print("融合两路检索结果...")
-                    merged_documents = self._merge_search_results(text_documents, image_documents)
-                    print(f"融合后的结果数量: {len(merged_documents)} 条")
-                    # 保存融合结果 - 统一前缀名称
-                    self.save_search_results(f"融合查询(文本+图像)", merged_documents, img_input, prefix="merged_search_result", search_type="merged")
-                    
-                    # 重排序
-                    reranked_docs = self.reranker.rerank(visual_analysis, merged_documents)
-                    # reranked_docs = merged_documents[:3]
-                    print(f"重排序后的结果数量: {len(reranked_docs)} 条")
-                    
-                    # 保存最终检索结果到日志目录 - 统一前缀名称
-                    self.save_search_results(visual_text, reranked_docs, img_input, prefix="final_search_result", search_type="final")
-                else:
-                    print("两路检索均未找到相关内容")
-                    result["status"] = "success"
-                    result["answer"] = f"分析结果：\n\n{visual_text}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
-                    return result
-                # ===== 双路检索结束 =====
-            else:
-                # 传统单路检索
-                print("使用传统单路检索...")
-                vl_vector = self.embedder.embed_text(visual_text)
-                documents = self.chroma_store.search(visual_text, vl_vector)
-                
-                if not documents:
-                    print("未找到相关的知识库内容")
-                    result["status"] = "success"
-                    result["answer"] = f"分析结果：\n\n{visual_text}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
-                    return result
+            if not documents:
+                print("未找到相关的知识库内容")
+                result["status"] = "success"
+                result["answer"] = f"分析结果：\n\n{visual_text}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
+                return result
                 
                 # 重排序
-                reranked_docs = self.reranker.rerank(visual_analysis, documents)
-                # reranked_docs = documents[:3]
-                print(f"找到相关知识库内容: {len(reranked_docs)} 条")
-                # 保存检索结果到日志目录 - 统一前缀名称
-                self.save_search_results(visual_text, reranked_docs, img_input, prefix="visual_search_result")
+            reranked_docs = self.reranker.rerank(visual_analysis, documents)
+            print(f"找到相关知识库内容: {len(reranked_docs)} 条")
+            # 保存检索结果到日志目录 - 统一前缀名称
+            self.save_search_results(visual_text, reranked_docs, img_input, prefix="visual_search_result")
                 
-                # 对于单路检索，image_documents为空列表
-                image_documents = []
+            # 对于单路检索，image_documents为空列表
+            # image_documents = []
             
             # 创建包含视觉分析结果的自定义文档对象
             img_source = "视觉模型分析图片"
@@ -573,13 +459,10 @@ class RAGSystem:
             try:
                 # 临时修改Generator的提示词创建方法，加入系统提示 - 使用与query函数相同的逻辑
                 def custom_create_prompt(generator_self, q, docs, img_docs=None):
-                    # 如果没有传入img_docs参数，使用外层作用域的image_documents
-                    if img_docs is None:
-                        img_docs = image_documents
                     
                     # 提取文档内容
                     text_contents = []
-                    image_contents = []
+                    # image_contents = []
                     
                     # 用户照片（第一个文档是视觉分析结果，包含用户照片路径）
                     user_photo = ""
@@ -595,24 +478,12 @@ class RAGSystem:
                         if i == 0:
                             text_contents.append(f"[视觉分析结果]: \"{content}\"")
                             continue
-                            
-                        # 检查是否为图片文档
-                        is_image = False
-                        if "type" in metadata and metadata["type"] == "image":
-                            is_image = True
-                        elif "img_path" in metadata and metadata["img_path"]:
-                            is_image = True
-                        
-                        if is_image:
-                            # 这是一个图片文档
-                            img_path = metadata.get("img_path", "")
-                            if img_path:
-                                image_contents.append(f"[案例图片 {len(image_contents)+1}]: {img_path}")
-                        else:
-                            # 这是一个文本文档
-                            source = metadata.get("source", "")
-                            source_name = os.path.basename(source) if source else f"检索到的文本块 {len(text_contents)}"
-                            text_contents.append(f"[{source_name}]: \"{content}\"")
+                        # 这是一个文本文档
+                        source = metadata.get("source", "")
+                        source_name = os.path.basename(source) if source else f"检索到的文本块 {len(text_contents)}"
+                        text_contents.append(f"[{source_name}]: \"{content}\"")    
+
+                           
                     
                     # 构建知识库文本依据部分
                     text_context = "\n".join(text_contents)
@@ -667,26 +538,6 @@ class RAGSystem:
                         modified_system_prompt = modified_system_prompt.replace("{retrieved_chunk_2_content}", "")
                         modified_system_prompt = modified_system_prompt.replace("{retrieved_chunk_2_metadata}", "")
                     
-                    # 构建知识库参考案例图片部分
-                    case_photos = []
-                    # 从传入的img_docs中提取图片路径
-                    for doc in img_docs[:2]:  # 只取前两张最相似的图片
-                        metadata = doc.get("metadata", {})
-                        img_path = metadata.get("img_path", "")
-                        if img_path:
-                            case_photos.append(img_path)
-
-                    # 如果有案例图片，替换占位符
-                    if len(case_photos) >= 1:
-                        modified_system_prompt = modified_system_prompt.replace("<retrieved_case_photo_1_placeholder>", case_photos[0])
-                    else:
-                        modified_system_prompt = modified_system_prompt.replace("<retrieved_case_photo_1_placeholder>", "无相关案例图片")
-                        
-                    if len(case_photos) >= 2:
-                        modified_system_prompt = modified_system_prompt.replace("<retrieved_case_photo_2_placeholder>", case_photos[1])
-                    else:
-                        modified_system_prompt = modified_system_prompt.replace("<retrieved_case_photo_2_placeholder>", "无相关案例图片")
-                    
                     # 自定义提示词，结合视觉分析和知识库内容
                     prompt = f"{user_query}\n\n参考资料：\n{text_context}"
                     
@@ -695,11 +546,8 @@ class RAGSystem:
                     
                     return prompt
                 
-                # 临时设置系统提示词创建方法，并传入image_documents参数
-                def bound_custom_create_prompt(q, docs):
-                    return custom_create_prompt(self.generator, q, docs, image_documents)
-                
-                self.generator._create_prompt = bound_custom_create_prompt
+                # 临时设置系统提示词创建方法
+                self.generator._create_prompt = custom_create_prompt.__get__(self.generator, type(self.generator))
                 
                 # 先调用一次create_prompt来获取修改后的系统提示词
                 self.generator._create_prompt(query, final_docs)
@@ -726,96 +574,6 @@ class RAGSystem:
             result["status"] = "error"
             result["answer"] = f"生成最终答案时出错: {str(e)}"
             return result
-
-    def _merge_search_results(self, text_docs: List[Dict], image_docs: List[Dict], text_weight: float = 0.6, image_weight: float = 0.4, top_k: int = 5) -> List[Dict]:
-        """融合基于文本和基于图像的检索结果
-        
-        Args:
-            text_docs: 基于文本检索的文档列表
-            image_docs: 基于图像检索的文档列表
-            text_weight: 文本检索结果的权重
-            image_weight: 图像检索结果的权重
-            top_k: 返回的最大文档数量
-            
-        Returns:
-            融合后的文档列表
-        """
-        # 如果任一列表为空，直接返回另一个列表
-        if not text_docs:
-            return image_docs[:top_k] if image_docs else []
-        if not image_docs:
-            return text_docs[:top_k] if text_docs else []
-            
-        # 创建文档ID到文档的映射
-        all_docs = {}
-        
-        # 处理文本检索结果
-        for i, doc in enumerate(text_docs):
-            doc_id = doc.get("id") or str(i)
-            # 确保每个文档有距离分数，如果没有则使用排名作为替代
-            distance = doc.get("distance", 1.0 - 1.0 / (i + 1))
-            # 归一化距离分数（越小越好）
-            normalized_score = 1.0 - distance if distance <= 1.0 else 0.0
-            
-            # 确保文档有content字段
-            if "content" not in doc or doc["content"] is None:
-                # 尝试从metadata中获取信息
-                metadata = doc.get("metadata", {})
-                source = metadata.get("source", "未知来源")
-                doc["content"] = f"来自{source}的文本文档"
-            
-            all_docs[doc_id] = {
-                "doc": doc,
-                "text_score": normalized_score,
-                "image_score": 0.0,
-                "final_score": normalized_score * text_weight
-            }
-            
-        # 处理图像检索结果
-        for i, doc in enumerate(image_docs):
-            doc_id = doc.get("id") or f"img_{i}"
-            # 确保每个文档有距离分数，如果没有则使用排名作为替代
-            distance = doc.get("distance", 1.0 - 1.0 / (i + 1))
-            # 归一化距离分数（越小越好）
-            normalized_score = 1.0 - distance if distance <= 1.0 else 0.0
-            
-            # 确保文档有content字段
-            if "content" not in doc or doc["content"] is None:
-                # 尝试从metadata中获取信息构造内容
-                metadata = doc.get("metadata", {})
-                img_path = metadata.get("img_path", "")
-                context = metadata.get("context", "")
-                
-                if context:
-                    # 如果有上下文描述，使用它
-                    doc["content"] = f"图片文档: {context}"
-                elif img_path:
-                    # 否则使用图片路径
-                    doc["content"] = f"图片文档: {os.path.basename(img_path)}"
-                else:
-                    # 如果没有任何信息，使用默认描述
-                    doc["content"] = f"图片文档 #{i+1}"
-            
-            if doc_id in all_docs:
-                # 文档已存在，更新分数
-                all_docs[doc_id]["image_score"] = normalized_score
-                all_docs[doc_id]["final_score"] += normalized_score * image_weight
-            else:
-                # 新文档
-                all_docs[doc_id] = {
-                    "doc": doc,
-                    "text_score": 0.0,
-                    "image_score": normalized_score,
-                    "final_score": normalized_score * image_weight
-                }
-                
-        # 按最终分数排序
-        sorted_results = sorted(all_docs.values(), key=lambda x: x["final_score"], reverse=True)
-        
-        # 返回前top_k个文档
-        merged_docs = [item["doc"] for item in sorted_results[:top_k]]
-        
-        return merged_docs
     
     def save_search_results(self, query_text: str, documents: List[Dict], img_input: str = None, prefix: str = "search_result", search_type: str = "text"):
         """保存检索结果到日志目录
@@ -828,7 +586,7 @@ class RAGSystem:
             search_type: 检索类型，如"text"或"image"
         """
         # 创建日志目录
-        log_dir = r"E:\program\AI\RAG\server_chroma\logs"
+        log_dir = str(LOGS_DIR)
         os.makedirs(log_dir, exist_ok=True)
         
         # 生成时间戳
@@ -921,7 +679,7 @@ def main(rebuild_index=False):
     raw_dir = "./data/raw"
     output_dir = "./output"
     snapshot_path = os.path.join(output_dir, "embedded_chunks.json")
-    log_dir = "./logs"
+    log_dir = str(LOGS_DIR)
     os.makedirs(log_dir, exist_ok=True)
     
     # 检查是否存在已生成的知识库快照，且不需要重建索引
@@ -945,27 +703,40 @@ def main(rebuild_index=False):
             print("将重新生成知识库...")
 
     # 如果需要重建索引或者没有现有快照，执行完整的处理流程
-    print("[1/6] 批量将PDF/Docx转为Markdown...")
+    # print("[1/6] 批量将PDF/Docx转为Markdown...")
     
-    # 检查特定的城市体检工作手册Markdown文件是否已存在
-    target_md_file = os.path.join(output_dir, "20250526城市体检工作手册.md")
+    # # 检查特定的城市体检工作手册Markdown文件是否已存在
+    # target_md_file = os.path.join(output_dir, "20250526城市体检工作手册.md")
     
-    if os.path.exists(target_md_file):
-        print(f"发现已存在的文件: {target_md_file}")
-        md_files = [target_md_file]
-        print("跳过PDF/Docx转换步骤")
-    else:
-        print("未找到城市体检工作手册Markdown文件，开始转换...")
-        md_files_pdf = batch_pdf_to_markdown(raw_dir, output_dir)
-        md_files_docx = batch_docx_to_markdown(raw_dir, output_dir)
-        md_files = md_files_pdf + md_files_docx
-        print(f"共生成Markdown文件: {md_files}")
+    # if os.path.exists(target_md_file):
+    #     print(f"发现已存在的文件: {target_md_file}")
+    #     md_files = [target_md_file]
+    #     print("跳过PDF/Docx转换步骤")
+    # else:
+    #     print("未找到城市体检工作手册Markdown文件，开始转换...")
+    #     md_files_pdf = batch_pdf_to_markdown(raw_dir, output_dir)
+    #     md_files_docx = batch_docx_to_markdown(raw_dir, output_dir)
+    #     md_files = md_files_pdf + md_files_docx
+    #     print(f"共生成Markdown文件: {md_files}")
+    
+    # if not md_files:
+    #     print("未发现可用的PDF或Docx文件，流程终止。")
+    #     return
+
+    print("[1/5] 查找Markdown文件...")
+    
+    # 直接查找Markdown文件，跳过PDF转换步骤
+    md_files = []
+    for file in os.listdir(raw_dir):
+        if file.lower().endswith('.md'):
+            md_files.append(os.path.join(raw_dir, file))
     
     if not md_files:
-        print("未发现可用的PDF或Docx文件，流程终止。")
+        print("未发现可用的Markdown文件，流程终止。")
         return
 
-    print("[2/6] 分块与图片识别...")
+
+    print("[2/5] 分块与图片识别...")
     
     # 检查是否已存在chunks.json文件
     chunks_file = os.path.join(output_dir, "chunks.json")
@@ -1003,12 +774,13 @@ def main(rebuild_index=False):
         print("未分出任何chunk，流程终止。")
         return
 
-    print("[3/6] 分离图像和文本切块...")
+    print("[3/5] 分离图像和文本切块...")
     text_chunks = [c for c in all_chunks if c["type"] == "text"]
     image_chunks = [c for c in all_chunks if c["type"] == "image"]
     print(f"待处理图片chunk数: {len(image_chunks)}，文本chunk数: {len(text_chunks)}")
-    
-    print("[5/6] 向量化...")
+    print(f"待处理文本chunk数: {len(text_chunks)}")
+
+    print("[4/5] 向量化...")
     
     # 检查是否已存在embedded_chunks.json文件
     if os.path.exists(snapshot_path):
@@ -1017,6 +789,11 @@ def main(rebuild_index=False):
         try:
             with open(snapshot_path, "r", encoding="utf-8") as f:
                 embedded_chunks = json.load(f)
+            # 过滤掉无效的chunks（没有embedding或content为None）
+            embedded_chunks = [
+                c for c in embedded_chunks 
+                if "embedding" in c and c.get("content") is not None
+            ]
             print(f"已加载向量化chunks数: {len(embedded_chunks)}")
         except Exception as e:
             print(f"加载向量化文件失败: {e}")
@@ -1035,25 +812,45 @@ def main(rebuild_index=False):
         # 处理所有chunks（同时处理文本和图像）
         embedded_chunks = embedder.embed_documents(all_chunks)
         print(f"已向量化chunk数: {len(embedded_chunks)}")
+        # 只处理文本chunks
+        # embedded_chunks = embedder.embed_documents(text_chunks)
+        # print(f"已向量化chunk数: {len(embedded_chunks)}")
 
         # 保存embedded_chunks到JSON文件
         try:
+            # 再次过滤，确保只保存有效文档
+            valid_chunks = [
+                chunk for chunk in embedded_chunks 
+                if "embedding" in chunk and chunk.get("content") is not None
+            ]
+            
+            if len(valid_chunks) < len(embedded_chunks):
+                print(f"过滤掉 {len(embedded_chunks) - len(valid_chunks)} 个无效chunks")
+            
             # 确保输出目录存在
             os.makedirs(os.path.dirname(snapshot_path), exist_ok=True)
             with open(snapshot_path, "w", encoding="utf-8") as f:
-                json.dump(embedded_chunks, f, ensure_ascii=False)
-            print(f"已保存知识库快照到: {snapshot_path}")
+                json.dump(valid_chunks, f, ensure_ascii=False)
+            print(f"已保存知识库快照到: {snapshot_path} ({len(valid_chunks)} 个有效chunks)")
             
-            # 同时保存一份到logs目录，便于查看
-            # embedded_chunks_log = os.path.join(log_dir, f"embedded_chunks_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-            # with open(embedded_chunks_log, "w", encoding="utf-8") as f:
-            #     json.dump(embedded_chunks, f, ensure_ascii=False)
         except Exception as e:
             print(f"保存知识库快照失败: {e}")
 
-    print("[6/6] 存储到Chroma...")
+    print("[5/5] 存储到Chroma...")
+    
+    # 最后一次过滤，确保只存储有效文档
+    valid_chunks = [
+        chunk for chunk in embedded_chunks 
+        if "embedding" in chunk and chunk.get("content") is not None
+    ]
+    
+    if len(valid_chunks) < len(embedded_chunks):
+        print(f"最终过滤: 移除 {len(embedded_chunks) - len(valid_chunks)} 个无效chunks")
+    
+    print(f"准备存储 {len(valid_chunks)} 个有效chunks到Chroma...")
+    
     chroma_store = ChromaStore()
-    success = chroma_store.add_documents(embedded_chunks)
+    success = chroma_store.add_documents(valid_chunks)
     
     if success:
         print("全部chunk已存入Chroma数据库！")
@@ -1064,18 +861,15 @@ if __name__ == "__main__":
     # 直接设置变量，不使用命令行参数
     rebuild_index = True  # 是否重建知识库索引
     query_only = False     # 是否仅查询模式，不构建知识库
-    dual_retrieval = True  # 是否启用双路检索（默认开启）
     
     # 如果不是仅查询模式，则先构建知识库
     if not query_only:
         main(rebuild_index=rebuild_index)
-    
-    # 问答交互环节
-    rag = RAGSystem(dual_retrieval=dual_retrieval)
+
+    rag = RAGSystem()
     print("\n知识库已构建完毕，可以开始问答。输入'quit'退出。")
     print("提示：你可以在问题中直接输入图片URL，系统会自动识别并处理。")
-    if dual_retrieval:
-        print("双路检索功能已启用，将同时使用文本和图像向量进行检索。")
+    print("单路文本检索功能已启用。")
     while True:
         user_input = input("\n请输入你的问题：").strip()
         if user_input.lower() == "quit":

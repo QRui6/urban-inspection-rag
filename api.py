@@ -35,7 +35,7 @@ app.add_middleware(
 )
 
 # 初始化RAG系统
-rag = RAGSystem(dual_retrieval=True)  # 默认启用双路检索
+rag = RAGSystem()  # 默认启用双路检索
 
 # 上传文件配置
 UPLOAD_FOLDER = 'uploads'
@@ -123,6 +123,29 @@ class UploadResponse(BaseModel):
     filename: str
     success: bool
     error: Optional[str] = None
+
+
+class AnalyzeImageIndicatorsRequest(BaseModel):
+    """
+    图片指标分析请求模型
+    支持通过URL、base64或文件上传方式传递图片
+    """
+    query: str = ""  # 可选的问题描述
+    image_url: Optional[str] = None  # 图片URL
+    image_base64: Optional[str] = None  # base64编码的图片
+    # 文件上传将在FastAPI中通过UploadFile处理，不在 BaseModel 中定义
+
+
+class AnalyzeImageIndicatorsResponse(BaseModel):
+    """
+    图片指标分析响应模型
+    包含结构化的指标分析结果
+    """
+    session_id: str  # 会话ID，用于后续完整回答生成
+    status: str  # 处理状态
+    indicators: Dict[str, Any]  # 结构化的指标信息
+    models_used: Dict[str, Optional[str]]  # 使用的模型信息
+    timestamp: float  # 时间戳
 
 
 def allowed_file(filename: str) -> bool:
@@ -263,7 +286,7 @@ async def complete_answer(request: CompleteAnswerRequest):
 @app.post('/api/query', response_model=QueryResponse)
 async def query(request: QueryRequest):
     """问答接口(原始完整流程，保留以兼容旧版)
-    接收JSON格式的请求，包含问题和可选的图片URL或base64数据
+    接收JSON格式的请求，包含问题和图片URL或base64数据
     返回AI回答，如果有图片输入，则同时返回视觉分析结果
     """
     try:
@@ -363,7 +386,6 @@ async def get_uploaded_file(filename: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(file_path)
-
 
 # 全局异常处理器
 @app.exception_handler(Exception)

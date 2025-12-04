@@ -76,6 +76,7 @@ class Embedder:
                 # 设置DashScope API密钥
                 dashscope.api_key = self.api_key
                 print(f"阿里DashScope多模态模型初始化成功: {self.model_id}")
+     
     
     def _init_chinese_clip(self):
         """初始化Chinese CLIP模型"""   
@@ -83,12 +84,17 @@ class Embedder:
         print(f"正在加载Chinese CLIP模型: {model_name}")
         
         try:
-            self.chinese_clip_model = ChineseCLIPModel.from_pretrained(model_name)
-            self.chinese_clip_processor = ChineseCLIPProcessor.from_pretrained(model_name)
+            self.chinese_clip_model = ChineseCLIPModel.from_pretrained(model_name, local_files_only=True)
+            self.chinese_clip_processor = ChineseCLIPProcessor.from_pretrained(model_name, local_files_only=True)
             
             # 如果有GPU可用，将模型移到GPU
             if self.embedding_config.get("device") == "cuda" and torch.cuda.is_available():
+                self.device = "cuda"
+                
                 self.chinese_clip_model = self.chinese_clip_model.to("cuda")
+            else:
+                self.device = "cpu"
+                print(f"CUDA不可用或未配置使用，模型将运行在CPU上。")
                 
             print(f"Chinese CLIP模型加载成功")
         except Exception as e:
@@ -215,26 +221,31 @@ class Embedder:
         if self.model_type == "local":
             # 检查当前模型是否支持多模态
             if not hasattr(self, 'is_multimodal') or not self.is_multimodal:
-                # 如果是纯文本模型，无法直接处理图像，返回零向量列表
-                print(f"警告: 当前模型 {self.active_embedding} 不支持图像编码，返回零向量列表")
-                # 获取模型的向量维度
-                sample_text_embedding = self.embed_text("sample")
-                zero_vector = [0.0] * len(sample_text_embedding)
-                return [zero_vector] * len(image_paths_or_urls_or_base64s)
+                # 如果是纯文本模型，无法直接处理图像
+                print(f"警告: 当前模型 {self.active_embedding} 不支持图像编码，跳过图像处理")
+                return []  # 返回空列表而不是零向量列表
             
             # 检查是否是Chinese CLIP模型
             if hasattr(self, 'is_chinese_clip') and self.is_chinese_clip:
                 # Chinese CLIP需要特殊处理批量图像编码
                 results = []
                 for img_input in image_paths_or_urls_or_base64s:
-                    results.append(self._embed_image_chinese_clip(img_input))
+                    embedding = self._embed_image_chinese_clip(img_input)
+                    if embedding:  # 只添加有效的embedding
+                        results.append(embedding)
+                    else:
+                        print(f"警告: 图像编码失败，跳过: {img_input}")
                 return results
             else:
                 images = []
+                valid_inputs = []
                 for img_input in image_paths_or_urls_or_base64s:
                     image = self._process_image_input(img_input)
                     if image is not None:
                         images.append(image)
+                        valid_inputs.append(img_input)
+                    else:
+                        print(f"警告: 无法处理图像输入，跳过: {img_input}")
                 
                 if not images:
                     return []
@@ -319,24 +330,53 @@ class Embedder:
         # 处理图像文档
         if image_docs:
             image_paths = []
+            valid_image_docs = []  # 只保留有效的图片文档
+            
             for doc in image_docs:
                 img_path = doc.get("content")
                 if not img_path and "metadata" in doc:
                     # 如果content为空但metadata中有img_path，使用img_path
                     img_path = doc["metadata"].get("img_path")
-                image_paths.append(img_path)
+                
+                # 检查图片文件是否存在
+                if img_path and os.path.exists(img_path):
+                    image_paths.append(img_path)
+                    valid_image_docs.append(doc)
+                else:
+                    print(f"警告: 图片文件不存在，跳过: {img_path}")
             
-            image_embeddings = self.embed_image_batch(image_paths)
-            for doc, embedding in zip(image_docs, image_embeddings):
-                doc["embedding"] = embedding
+            # 只对有效的图片进行向量化
+            if valid_image_docs:
+                image_embeddings = self.embed_image_batch(image_paths)
+                for doc, embedding in zip(valid_image_docs, image_embeddings):
+                    doc["embedding"] = embedding
+            
+            # 更新 image_docs 为只包含有效的文档
+            image_docs = valid_image_docs
         
-        # 合并结果
-        result = documents.copy()
-        for i, doc in zip(text_indices, text_docs):
-            result[i] = doc
-        for i, doc in zip(image_indices, image_docs):
-            result[i] = doc
+        # # 合并结果
+        # result = documents.copy()
+        # for i, doc in zip(text_indices, text_docs):
+        #     result[i] = doc
+        # for i, doc in zip(image_indices, image_docs):
+        #     result[i] = doc
         
+        # return result
+
+        # 只返回有 embedding 的有效文档
+        result = []
+
+        # 添加所有有 embedding 的文本文档
+        for doc in text_docs:
+            if "embedding" in doc:
+                result.append(doc)
+
+        # 添加所有有 embedding 的图片文档
+        for doc in image_docs:
+            if "embedding" in doc:
+                result.append(doc)
+
+        print(f"返回有效文档数: {len(result)}/{len(documents)}")
         return result
     
     def _process_image_input(self, image_input: str) -> Optional[Image.Image]:
@@ -458,7 +498,11 @@ class Embedder:
         try:
             # 使用Chinese CLIP processor处理文本
             inputs = self.chinese_clip_processor(text=text, return_tensors="pt", padding=True, truncation=True, max_length=512)
-            
+            print(self.device)
+            print(torch.cuda.is_available())
+            print(f"Inputs keys: {inputs.keys()}")
+            for k, v in inputs.items():
+                print(f"{k}: {v.shape if v is not None else 'None'}")
             # 如果模型在GPU上，将输入也移到GPU
             if self.device == "cuda" and torch.cuda.is_available():
                 inputs = {k: v.to("cuda") for k, v in inputs.items()}
@@ -473,6 +517,8 @@ class Embedder:
         except Exception as e:
             print(f"Chinese CLIP文本编码失败: {e}")
             return []
+    
+
     
     def _embed_image_chinese_clip(self, image_input: str) -> List[float]:
         """使用Chinese CLIP模型将图像转为embedding向量

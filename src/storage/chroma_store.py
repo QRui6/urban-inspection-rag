@@ -38,16 +38,29 @@ class ChromaStore:
         :return: 添加成功返回True，否则False
         """
         try:
-            ids = [str(i) for i in range(self.get_document_count(), self.get_document_count() + len(documents))]
-            embeddings = [doc["embedding"] for doc in documents]
+            # 过滤无效文档
+            valid_documents = [
+                doc for doc in documents 
+                if "embedding" in doc and doc.get("content") is not None
+            ]
+            
+            if len(valid_documents) < len(documents):
+                print(f"警告: 过滤掉 {len(documents) - len(valid_documents)} 个无效文档")
+            
+            if not valid_documents:
+                print("警告: 没有有效的文档可以添加")
+                return True
+
+            ids = [str(i) for i in range(self.get_document_count(), self.get_document_count() + len(valid_documents))]
+            embeddings = [doc["embedding"] for doc in valid_documents]
             
             # 处理metadata，确保所有值都是Chroma支持的类型
             metadatas = []
-            for doc in documents:
+            for doc in valid_documents:
                 cleaned_metadata = self._clean_metadata(doc["metadata"])
                 metadatas.append(cleaned_metadata)
             
-            documents_content = [doc["content"] for doc in documents]
+            documents_content = [doc["content"] for doc in valid_documents]
             self.collection.add(
                 ids=ids,
                 embeddings=embeddings,
@@ -83,34 +96,107 @@ class ChromaStore:
                 cleaned[key] = str(value)
         return cleaned
 
+    # def search(self, query: str, query_vector: List[float], top_k: int = 5) -> List[Dict[str, Any]]:
+    #     """
+    #     基于向量的相似度检索
+    #     :param query: 查询文本（未用，仅为接口兼容）
+    #     :param query_vector: 查询向量
+    #     :param top_k: 返回最相似的文档数量
+    #     :return: 检索到的文档列表，每个包含content、embedding、metadata
+    #     """
+    #     try:
+    #         results = self.collection.query(
+    #             query_embeddings=[query_vector],
+    #             n_results=top_k,
+    #             # include=["documents", "embeddings", "metadatas"]
+    #         )
+    #         docs = []
+    #         indicator_docs = []  # 指标文档
+    #         general_docs = []    # 通用文档
+    #         for i in range(len(results["ids"][0])):
+    #             # 恢复metadata中的列表类型数据
+    #             metadata = self._restore_metadata(results["metadatas"][0][i])
+    #             docs.append({
+    #                 "content": results["documents"][0][i],
+    #                 "metadata": metadata,
+    #                 "distance": results["distances"][0][i],  # 可选：加上距离，便于后续排序或调试
+    #                 "id": results["ids"][0][i]
+    #             })
+    #         return docs
+    #     except Exception as e:
+    #         print(f"Chroma搜索时出错: {str(e)}")
+    #         return []
+
     def search(self, query: str, query_vector: List[float], top_k: int = 5) -> List[Dict[str, Any]]:
         """
-        基于向量的相似度检索
+        基于向量的相似度检索，优化指标内容检索
         :param query: 查询文本（未用，仅为接口兼容）
         :param query_vector: 查询向量
         :param top_k: 返回最相似的文档数量
         :return: 检索到的文档列表，每个包含content、embedding、metadata
         """
         try:
+            # 大幅增加检索候选数量，确保能检索到指标内容
+            candidate_count = max(top_k * 10, 200)  # 至少检索100个候选
             results = self.collection.query(
                 query_embeddings=[query_vector],
-                n_results=top_k,
-                # include=["documents", "embeddings", "metadatas"]
+                n_results=candidate_count,
             )
-            docs = []
+            
+            indicator_docs = []  # 指标文档
+            general_docs = []    # 通用文档
+            
+            # 按chunk_type分类文档
             for i in range(len(results["ids"][0])):
                 # 恢复metadata中的列表类型数据
                 metadata = self._restore_metadata(results["metadatas"][0][i])
-                docs.append({
+                doc = {
                     "content": results["documents"][0][i],
                     "metadata": metadata,
                     "distance": results["distances"][0][i],  # 可选：加上距离，便于后续排序或调试
                     "id": results["ids"][0][i]
-                })
-            return docs
+                }
+                
+                # 根据chunk_type分类
+                if metadata.get("chunk_type") == "indicator_complete":
+                    indicator_docs.append(doc)
+                else:
+                    general_docs.append(doc)
+            
+            # 如果指标文档数量不足，降低筛选标准
+            if len(indicator_docs) < top_k * 0.3:  # 如果指标文档少于30%
+                # 尝试通过其他元数据识别指标内容
+                for doc in general_docs[:]:
+                    metadata = doc["metadata"]
+                    # 通过标题或其他特征识别潜在的指标内容
+                    indicator_title = metadata.get("indicator_title", "")
+                    if ("指标" in indicator_title or 
+                        "体检依据" in doc["content"] or 
+                        "体检内容" in doc["content"] or
+                        "指标解释" in doc["content"]):
+                        # 将这些文档也视为指标文档
+                        indicator_docs.append(doc)
+                        general_docs.remove(doc)
+            
+            # 按距离排序（距离越小越相似）
+            indicator_docs.sort(key=lambda x: x["distance"])
+            general_docs.sort(key=lambda x: x["distance"])
+            
+            # 优先返回指标文档
+            if len(indicator_docs) >= top_k:
+                # 如果指标文档足够，优先返回指标文档
+                final_docs = indicator_docs[:top_k]
+            else:
+                # 如果指标文档不足，全部返回并补充通用文档
+                final_docs = indicator_docs[:]
+                remaining_count = top_k - len(indicator_docs)
+                final_docs.extend(general_docs[:remaining_count])
+            
+            return final_docs
         except Exception as e:
             print(f"Chroma搜索时出错: {str(e)}")
             return []
+
     
     def _restore_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """

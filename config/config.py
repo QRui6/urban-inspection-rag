@@ -11,6 +11,8 @@ ROOT_DIR = Path(__file__).parent.parent
 DATA_DIR = ROOT_DIR / "data"
 RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
+# 添加日志目录配置
+LOGS_DIR = ROOT_DIR / "logs"
 
 # Elasticsearch配置
 ES_CONFIG = {
@@ -40,10 +42,37 @@ RERANKER_CONFIG = {
 }
 
 # 火山引擎API配置
-ARK_API_KEY = os.environ.get("ARK_API_KEY", "a510e12d-c2b0-4382-b73a-e525cbe60e55")
+# 单个密钥配置（向后兼容）
+ARK_API_KEY = os.environ.get("ARK_API_KEY", "521ac7f7-2841-49c2-8401-eb6126155f4e")
 ARK_BASE_URL = os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-# ARK_MODEL_ID = os.environ.get("ARK_MODEL_ID", "ep-20250208172048-c9n4x")
 ARK_MODEL_ID = os.environ.get("ARK_MODEL_ID", "doubao-1-5-thinking-vision-pro-250428")
+
+# 多密钥配置（用于提升并发）
+# 可以添加多个火山引擎API密钥，系统会自动轮询使用
+ARK_API_KEYS = [
+    {
+        "name": "火山引擎-主账号",
+        "key": "521ac7f7-2841-49c2-8401-eb6126155f4e",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "model_id": "doubao-1-5-thinking-vision-pro-250428"
+    },
+    # 添加更多密钥以提升并发能力
+    # {
+    #     "name": "火山引擎-子账号1",
+    #     "key": "your_second_api_key",
+    #     "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    #     "model_id": "doubao-1-5-thinking-vision-pro-250428"
+    # },
+    # {
+    #     "name": "火山引擎-子账号2",
+    #     "key": "your_third_api_key",
+    #     "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    #     "model_id": "doubao-1-5-thinking-vision-pro-250428"
+    # },
+]
+
+# 每个API密钥的最大并发数
+MAX_CONCURRENT_PER_KEY = int(os.environ.get("MAX_CONCURRENT_PER_KEY", 3))
 
 # Google Gemini API配置
 # "AIzaSyAUMGFjOEx4gHp5BLbeb6pqDQEjydnWlFk",  # 主密钥
@@ -167,7 +196,7 @@ ACTIVE_MODELS = {
     # "vision": "gemini",
     # "vision": "qwen-vl",     # 视觉分析模型：可选 "qwen-vl", "gemini", "volcengine-vision"
     "vision": "volcengine-vision", 
-    "language": "gemini", # 语言生成模型
+    "language": "volcengine", # 语言生成模型
     "embedding": "chinese-clip" # 向量嵌入模型 - 支持图像和文本的多模态模型
 }
 
@@ -248,7 +277,7 @@ PROMPT_CONFIG = {
 **14. 停车泊位缺口数**
   14.3 存在占用消防通道问题。注意：消防通道通常是楼梯口、过道、消防车通道等区域。
 
-**16. 未配建电动自行车充电设施的小区数量**
+**16. 未配建电动自行车充电设施的小区数量** 
   16.1 未配建电动自行车集中充电设施
   16.2 小区电动自行车乱拉飞线充电、安全防护设施配备和消防安全管理不到位
 
@@ -295,7 +324,7 @@ PROMPT_CONFIG = {
         "default": "你是一个专业的助手，请基于给定的参考信息回答问题。",
         
         # 城市体检报告生成提示词
-        "city_inspection_report": """你是一位极其严谨和专业的城市体检专家，专门负责住房和社区维度的体检工作。请根据用户上传的现场照片，并结合从《城市体检工作手册》知识库中检索到的文本依据和相似案例图片，生成一份专业的分析报告。
+        "city_inspection_report": """你是一位极其严谨和专业的城市体检专家，专门负责住房和社区维度的体检工作。请根据用户上传的现场照片，并结合从《城市体检工作手册》知识库中检索到的文本依据，生成一份专业的分析报告。
                             **[输入信息]**
                             
                             1.  **用户现场照片**: 
@@ -310,23 +339,18 @@ PROMPT_CONFIG = {
                                 *来源: {retrieved_chunk_2_metadata}*
                                 ---
                             
-                            3.  **知识库参考案例图片**:
-                                [案例图片 1]: <retrieved_case_photo_1_placeholder>
-                                [案例图片 2]: <retrieved_case_photo_2_placeholder>
-                            
                             **[你的任务]**
                             
                             请严格按照以下格式，结合所有输入信息，生成分析报告：
                             
-                            - **指标分类**: [此处填写“视觉分析结果”中的“指标分类”字段]
+                            - **指标分类**: [此处填写"视觉分析结果"中的"指标分类"字段]
 
-                            - **具体问题**: [此处填写“视觉-分析结果”中的“具体问题”字段]
+                            - **具体问题**: [此处填写"视觉-分析结果"中的"具体问题"字段]
                             
                             - **隐患描述**: 详细描述在【用户现场照片】中观察到的具体问题，并解释为什么它构成隐患。
                             
                             - **体检依据**: **直接、完整地引用**在 **[知识库-文本依据]** 中找到的 **【体检依据】** 部分。必须明确列出所引用的法规、政策文件名（如《住宅项目规范》（GB55038-2025））。如果文本中包含多个依据，请都列出来。
                             
-                            - **整改建议**: 基于发现的隐患类型和体检依据，提供整改措施和建议，用一段话来描述，不要分点。
                             
                             请确保你的回答专业、严谨，并充分利用了提供的所有图文材料。
                             """,
@@ -344,6 +368,21 @@ PROMPT_CONFIG = {
     # 用户提示词模板
     "user": {
         # 查询模板
-        "query_template": "以下是用户的问题:\n{query}\n\n请根据知识库内容和视觉分析结果，提供专业的安全评估和整改建议。"
+        "query_template": """以下是用户的问题:\n{query}\n\n请根据知识库内容和视觉分析结果
+                            **[你的任务]**
+                            
+                            请严格按照以下格式，结合所有输入信息，生成分析报告：
+                            
+                            - **指标分类**: [此处填写"视觉分析结果"中的"指标分类"字段]
+
+                            - **具体问题**: [此处填写"视觉-分析结果"中的"具体问题"字段]
+                            
+                            - **隐患描述**: 详细描述在【用户现场照片】中观察到的具体问题，并解释为什么它构成隐患。
+                            
+                            - **体检依据**: **直接、完整地引用**在 **[知识库-文本依据]** 中找到的 **【体检依据】** 部分。必须明确列出所引用的法规、政策文件名（如《住宅项目规范》（GB55038-2025））。如果文本中包含多个依据，请都列出来。
+                            
+                            
+                            请确保你的回答专业、严谨，并充分利用了提供的所有图文材料。
+        """
     }
 } 

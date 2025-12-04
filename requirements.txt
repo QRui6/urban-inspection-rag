@@ -5,6 +5,8 @@ werkzeug
 torch
 sentence-transformers
 transformers
+tokenizers
+pycparser
 chromadb
 numpy
 pandas
@@ -15,3 +17,18 @@ requests
 dashscope
 pydantic
 python-dotenv
+langchain
+langchain-community
+# Google AI 相关
+google-genai
+# 火山引擎相关
+volcengine-python-sdk[ark]
+# PDF处理
+PyMuPDF
+# 文件类型检测
+python-magic
+# 重试机制
+tenacity
+# Redis和异步任务队列
+redis
+rq

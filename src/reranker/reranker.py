@@ -11,7 +11,7 @@ class Reranker:
     """重排序类"""
     
     def __init__(self):
-        self.model = CrossEncoder(RERANKER_CONFIG["model_name"])
+        self.model = CrossEncoder(RERANKER_CONFIG["model_name"], local_files_only=True)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.top_k = RERANKER_CONFIG["top_k"]
         
@@ -77,10 +77,13 @@ class Reranker:
         # 提取问题名用于重排序
         # problem_name = self.extract_problem_name(query)
         indicator_title = query.get("indicator_classification")
+        # indicator_title = query.get("specific_problem")
+        # indicator_title = self.extract_problem_name(query)
         print(f"提取的指标名称: {indicator_title}")
             
         # 准备输入对 - 使用提取的问题名与文档的indicator_title进行匹配
         pairs = [(indicator_title, doc["metadata"]["indicator_title"]) for doc in documents]
+        # print("pairs: ",pairs)
         
         # 计算相关性分数
         scores = self.model.predict(
@@ -98,6 +101,8 @@ class Reranker:
             key=lambda x: x["rerank_score"],
             reverse=True
         )
+
+        # print("reranked_docs: ",reranked_docs)
         
         # 返回top_k个结果
         return reranked_docs[:self.top_k] 

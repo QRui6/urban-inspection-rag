@@ -1,0 +1,2 @@
+Method,Name,Error,Occurrences
+POST,1-analyze-image,CatchResponseError('状态码: 0'),1

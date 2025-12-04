@@ -5,9 +5,22 @@ from pathlib import Path
 
 class MarkdownChunkLoader:
     """Markdown分块与图片识别"""
+    # def __init__(self, md_path: str, image_root: str = None):
+    #     self.md_path = md_path
+    #     self.image_root = image_root or os.path.dirname(md_path)
     def __init__(self, md_path: str, image_root: str = None):
         self.md_path = md_path
-        self.image_root = image_root or os.path.dirname(md_path)
+        # 如果没有提供image_root，则根据Markdown文件位置自动推断图片根目录
+        if image_root is None:
+            # 假设图片在与Markdown文件同目录的images子目录中
+            md_dir = os.path.dirname(os.path.abspath(md_path))
+            potential_image_dir = os.path.join(md_dir, "images")
+            if os.path.exists(potential_image_dir):
+                self.image_root = potential_image_dir
+            else:
+                self.image_root = md_dir
+        else:
+            self.image_root = image_root
 
     def chunk(self) -> List[Dict[str, Any]]:
         with open(self.md_path, 'r', encoding='utf-8') as f:
