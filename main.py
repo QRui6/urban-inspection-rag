@@ -384,11 +384,19 @@ class RAGSystem:
                 }
             }
         """
+        # 处理visual_analysis，区分用于显示的文本和用于检索的数据
+        # 保存原始的visual_analysis用于rerank（需要dict格式）
+        visual_analysis_dict = visual_analysis if isinstance(visual_analysis, dict) else {}
+        
+        # 生成用于显示和检索的文本格式
         if isinstance(visual_analysis, dict):
             visual_text = json.dumps(visual_analysis, ensure_ascii=False)
             visual_text = visual_text.replace("indicator_classification", "指标分类")
             visual_text = visual_text.replace("specific_problem", "具体问题")
             visual_text = visual_text.replace("detailed_description", "详细描述")
+        else:
+            # 如果不是dict，直接使用字符串形式
+            visual_text = str(visual_analysis) if visual_analysis else ""
         
         result = {
             "visual_analysis": visual_text,  # 添加视觉分析结果
@@ -405,18 +413,18 @@ class RAGSystem:
             print("使用传统单路检索...")
             vl_vector = self.embedder.embed_text(visual_text)
             documents = self.chroma_store.search(visual_text, vl_vector)
-            print("visual_text",visual_text)
-            print("vl_vector",vl_vector)
-            print("documents",documents)
+            print("visual_text:", visual_text)
+            print("visual_analysis_dict:", visual_analysis_dict)
+            print("documents数量:", len(documents) if documents else 0)
                 
             if not documents:
                 print("未找到相关的知识库内容")
                 result["status"] = "success"
                 result["answer"] = f"分析结果：\n\n{visual_text}\n\n未在知识库中找到相关的法规依据。请咨询专业人士进行进一步评估。"
                 return result
-                
-                # 重排序
-            reranked_docs = self.reranker.rerank(visual_analysis, documents)
+            
+            # 重排序 - 使用原始的dict格式（rerank方法需要dict）
+            reranked_docs = self.reranker.rerank(visual_analysis_dict, documents)
             print(f"找到相关知识库内容: {len(reranked_docs)} 条")
             # 保存检索结果到日志目录 - 统一前缀名称
             self.save_search_results(visual_text, reranked_docs, img_input, prefix="visual_search_result")

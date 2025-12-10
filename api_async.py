@@ -21,10 +21,12 @@ from src.tasks.queue_config import (
     check_redis_connection,
     image_analysis_queue,
     answer_generation_queue,
+    full_query_queue,
 )
 from src.tasks.image_tasks import (
     analyze_image_task,
     complete_answer_task,
+    full_query_task,
 )
 from src.utils.image_tools import image_to_base64
 
@@ -89,6 +91,20 @@ class CompleteAnswerResponse(BaseModel):
     answer: str
     models_used: Dict[str, Optional[str]]
     timestamp: float
+
+
+class QueryRequest(BaseModel):
+    query: str
+    image_url: Optional[str] = None
+    image_base64: Optional[str] = None
+
+
+class QueryResponse(BaseModel):
+    status: str
+    timestamp: float
+    visual_analysis: Optional[str] = None
+    models_used: Optional[Dict[str, Optional[str]]] = None
+    answer: Optional[str] = None
 
 
 class UploadResponse(BaseModel):
@@ -298,6 +314,81 @@ async def complete_answer(request: CompleteAnswerRequest):
         raise HTTPException(
             status_code=500,
             detail=f"生成最终回答时出错: {str(e)}"
+        )
+
+
+@app.post('/api/query', response_model=QueryResponse)
+async def query(request: QueryRequest):
+    """
+    完整查询接口（与api.py完全兼容）
+    接收问题和可选的图片，一次性完成分析和答案生成
+    内部使用异步队列处理，但对前端表现为同步
+    注意：此接口会等待较长时间（约25秒），推荐使用两步调用方式
+    """
+    try:
+        # 生成任务ID
+        task_id = str(time.time())
+        
+        # 选择图片输入源（与api.py保持一致）
+        img_input = None
+        if request.image_base64 and request.image_base64.startswith('data:image'):
+            img_input = request.image_base64
+            print("使用base64图片数据进行问答")
+        elif request.image_url:
+            img_input = request.image_url
+            print(f"使用图片URL进行问答: {request.image_url}")
+        else:
+            print("执行纯文本问答")
+        
+        # 提交任务到异步队列
+        job = full_query_queue.enqueue(
+            full_query_task,
+            task_id=task_id,
+            query=request.query,
+            img_input=img_input,
+            job_timeout='15m',
+            result_ttl=3600
+        )
+        
+        # 等待任务完成（最多等待15分钟）
+        max_wait = 900
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait:
+            job.refresh()
+            
+            if job.is_finished:
+                result = job.result
+                
+                # 返回与api.py完全一致的格式
+                return QueryResponse(
+                    status=result.get("status", "success"),
+                    timestamp=time.time(),
+                    visual_analysis=result.get("visual_analysis"),
+                    models_used=result.get("models_used"),
+                    answer=result.get("answer")
+                )
+            
+            elif job.is_failed:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"任务处理失败: {str(job.exc_info) if job.exc_info else '未知错误'}"
+                )
+            
+            await asyncio.sleep(1)
+        
+        raise HTTPException(
+            status_code=504,
+            detail="任务处理超时，请稍后重试"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"处理查询请求时出错: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"处理查询请求时出错: {str(e)}"
         )
 
 
